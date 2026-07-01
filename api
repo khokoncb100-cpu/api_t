@@ -1,0 +1,667 @@
+from flask import Flask, request, jsonify, render_template_string
+from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import quote_plus
+import concurrent.futures
+import secrets
+import json
+import os
+import time
+import random
+import re
+
+app = Flask(__name__)
+
+# ==================== কনফিগারেশন ====================
+API_KEYS = {
+    'free_user_123': {'rate_limit': 50, 'name': 'Free User'},
+    'premium_user_456': {'rate_limit': 500, 'name': 'Premium User'},
+    'test_key_789': {'rate_limit': 1000, 'name': 'Test User'}
+}
+REQUEST_COUNTS = {key: 0 for key in API_KEYS}
+TIMEOUT = 10
+
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+]
+
+# ==================== ১০টি সার্চ ইঞ্জিন ====================
+
+def search_duckduckgo(query):
+    """১. DuckDuckGo"""
+    try:
+        url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        for result in soup.select('.result')[:6]:
+            title_elem = result.select_one('.result__a')
+            snippet_elem = result.select_one('.result__snippet')
+            if title_elem:
+                title = title_elem.text.strip()
+                link = title_elem.get('href')
+                if link and link.startswith('/'):
+                    link = 'https://duckduckgo.com' + link
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🦆 DuckDuckGo'})
+        return results
+    except Exception as e:
+        print(f"DuckDuckGo error: {e}")
+        return []
+
+def search_qwant(query):
+    """২. Qwant"""
+    try:
+        url = f"https://www.qwant.com/?q={quote_plus(query)}"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        for result in soup.select('.result')[:6]:
+            title_elem = result.select_one('a[data-testid="result-link"]')
+            snippet_elem = result.select_one('.result-snippet')
+            if title_elem:
+                title = title_elem.text.strip()
+                link = title_elem.get('href')
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🔵 Qwant'})
+        return results
+    except Exception as e:
+        print(f"Qwant error: {e}")
+        return []
+
+def search_brave(query):
+    """৩. Brave Search"""
+    try:
+        url = f"https://search.brave.com/search?q={quote_plus(query)}"
+        headers = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        for result in soup.select('.snippet')[:6]:
+            title_elem = result.select_one('h3')
+            link_elem = result.select_one('a')
+            snippet_elem = result.select_one('.snippet-description')
+            if title_elem and link_elem:
+                title = title_elem.text.strip()
+                link = link_elem.get('href')
+                if link and not link.startswith('http'):
+                    link = 'https://search.brave.com' + link
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🦁 Brave'})
+        return results
+    except Exception as e:
+        print(f"Brave error: {e}")
+        return []
+
+def search_startpage(query):
+    """৪. Startpage"""
+    try:
+        url = f"https://www.startpage.com/sp/search?q={quote_plus(query)}"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        for result in soup.select('.result')[:6]:
+            title_elem = result.select_one('a')
+            snippet_elem = result.select_one('.description')
+            if title_elem:
+                title = title_elem.text.strip()
+                link = title_elem.get('href')
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🟢 Startpage'})
+        return results
+    except Exception as e:
+        print(f"Startpage error: {e}")
+        return []
+
+def search_yandex(query):
+    """৫. Yandex"""
+    try:
+        url = f"https://yandex.com/search/?text={quote_plus(query)}"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        for result in soup.select('.serp-item')[:6]:
+            title_elem = result.select_one('.organic__url-text')
+            link_elem = result.select_one('.organic__url')
+            snippet_elem = result.select_one('.organic__text')
+            if title_elem and link_elem:
+                title = title_elem.text.strip()
+                link = link_elem.get('href')
+                if link and not link.startswith('http'):
+                    link = 'https://yandex.com' + link
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🔴 Yandex'})
+        return results
+    except Exception as e:
+        print(f"Yandex error: {e}")
+        return []
+
+def search_google(query):
+    """৬. Google Search (সতর্ক: স্ক্র্যাপ করা কঠিন)"""
+    try:
+        url = f"https://www.google.com/search?q={quote_plus(query)}&num=10"
+        headers = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        
+        # Google এর বিভিন্ন সিলেক্টর ট্রাই
+        for result in soup.select('div.g')[:6]:
+            title_elem = result.select_one('h3')
+            link_elem = result.select_one('a')
+            snippet_elem = result.select_one('div.VwiC3b, div.IsZvec, div.yDYNvb')
+            
+            if title_elem and link_elem:
+                title = title_elem.text.strip()
+                link = link_elem.get('href')
+                if link and link.startswith('/url?q='):
+                    link = link.split('/url?q=')[1].split('&')[0]
+                elif link and not link.startswith('http'):
+                    continue
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                if title and link:
+                    results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🔵 Google'})
+        
+        # যদি কোন ফলাফল না পাওয়া যায়, বিকল্প পদ্ধতি
+        if not results:
+            for result in soup.select('div.yuRUbf')[:6]:
+                title_elem = result.select_one('h3')
+                link_elem = result.select_one('a')
+                if title_elem and link_elem:
+                    title = title_elem.text.strip()
+                    link = link_elem.get('href')
+                    if link and link.startswith('/url?q='):
+                        link = link.split('/url?q=')[1].split('&')[0]
+                    snippet_elem = result.find_next('div', class_=re.compile(r'VwiC3b|IsZvec|yDYNvb'))
+                    snippet = snippet_elem.text.strip() if snippet_elem else ''
+                    results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🔵 Google'})
+        
+        return results
+    except Exception as e:
+        print(f"Google error: {e}")
+        return []
+
+def search_bing(query):
+    """৭. Bing Search"""
+    try:
+        url = f"https://www.bing.com/search?q={quote_plus(query)}&count=10"
+        headers = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        
+        for result in soup.select('li.b_algo')[:6]:
+            title_elem = result.select_one('h2 a')
+            snippet_elem = result.select_one('div.b_caption p, p.b_lineclamp')
+            if title_elem:
+                title = title_elem.text.strip()
+                link = title_elem.get('href')
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                if title and link:
+                    results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🔴 Bing'})
+        
+        # ব্যাকআপ সিলেক্টর
+        if not results:
+            for result in soup.select('div.b_algo')[:6]:
+                title_elem = result.select_one('a')
+                snippet_elem = result.select_one('p')
+                if title_elem:
+                    title = title_elem.text.strip()
+                    link = title_elem.get('href')
+                    snippet = snippet_elem.text.strip() if snippet_elem else ''
+                    if title and link:
+                        results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🔴 Bing'})
+        
+        return results
+    except Exception as e:
+        print(f"Bing error: {e}")
+        return []
+
+def search_ecosia(query):
+    """৮. Ecosia (পরিবেশবান্ধব)"""
+    try:
+        url = f"https://www.ecosia.org/search?q={quote_plus(query)}"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        
+        for result in soup.select('.result')[:6]:
+            title_elem = result.select_one('.result-title')
+            link_elem = result.select_one('a.result-link')
+            snippet_elem = result.select_one('.result-snippet')
+            
+            if title_elem and link_elem:
+                title = title_elem.text.strip()
+                link = link_elem.get('href')
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🌳 Ecosia'})
+        
+        # বিকল্প সিলেক্টর
+        if not results:
+            for result in soup.select('div[data-testid="result"]')[:6]:
+                title_elem = result.select_one('h2')
+                link_elem = result.select_one('a')
+                snippet_elem = result.select_one('p')
+                if title_elem and link_elem:
+                    title = title_elem.text.strip()
+                    link = link_elem.get('href')
+                    snippet = snippet_elem.text.strip() if snippet_elem else ''
+                    results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🌳 Ecosia'})
+        
+        return results
+    except Exception as e:
+        print(f"Ecosia error: {e}")
+        return []
+
+def search_metager(query):
+    """৯. MetaGer (জার্মান প্রাইভেট)"""
+    try:
+        url = f"https://metager.org/meta/meta.ger3?eingabe={quote_plus(query)}"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        
+        for result in soup.select('.result')[:6]:
+            title_elem = result.select_one('a')
+            snippet_elem = result.select_one('.description')
+            if title_elem:
+                title = title_elem.text.strip()
+                link = title_elem.get('href')
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '🟣 MetaGer'})
+        
+        return results
+    except Exception as e:
+        print(f"MetaGer error: {e}")
+        return []
+
+def search_wikipedia(query):
+    """১০. Wikipedia (শুধু এনসাইক্লোপিডিয়া)"""
+    try:
+        url = f"https://en.wikipedia.org/w/index.php?search={quote_plus(query)}"
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=TIMEOUT)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results = []
+        
+        for result in soup.select('.mw-search-result')[:6]:
+            title_elem = result.select_one('.mw-search-result-heading a')
+            snippet_elem = result.select_one('.searchresult')
+            if title_elem:
+                title = title_elem.text.strip()
+                link = 'https://en.wikipedia.org' + title_elem.get('href')
+                snippet = snippet_elem.text.strip() if snippet_elem else ''
+                results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '📚 Wikipedia'})
+        
+        # ব্যাকআপ
+        if not results:
+            for result in soup.select('li.mw-search-result')[:6]:
+                title_elem = result.select_one('a')
+                snippet_elem = result.select_one('.searchresult')
+                if title_elem:
+                    title = title_elem.text.strip()
+                    link = 'https://en.wikipedia.org' + title_elem.get('href')
+                    snippet = snippet_elem.text.strip() if snippet_elem else ''
+                    results.append({'title': title, 'url': link, 'snippet': snippet, 'source': '📚 Wikipedia'})
+        
+        return results
+    except Exception as e:
+        print(f"Wikipedia error: {e}")
+        return []
+
+# ==================== সকল সার্চ ইঞ্জিনের লিস্ট ====================
+SEARCH_ENGINES = [
+    search_duckduckgo,
+    search_qwant,
+    search_brave,
+    search_startpage,
+    search_yandex,
+    search_google,
+    search_bing,
+    search_ecosia,
+    search_metager,
+    search_wikipedia
+]
+
+# ==================== API কী ডেকোরেটর ====================
+def require_api_key(f):
+    def decorated_function(*args, **kwargs):
+        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+        if not api_key:
+            return jsonify({'error': 'API key required', 'status': 401}), 401
+        if api_key not in API_KEYS:
+            return jsonify({'error': 'Invalid API key', 'status': 401}), 401
+        if REQUEST_COUNTS[api_key] >= API_KEYS[api_key]['rate_limit']:
+            return jsonify({'error': 'Rate limit exceeded', 'status': 429}), 429
+        REQUEST_COUNTS[api_key] += 1
+        kwargs['user_info'] = API_KEYS[api_key]
+        kwargs['api_key'] = api_key
+        return f(*args, **kwargs)
+    decorated_function.__name__ = f.__name__
+    return decorated_function
+
+# ==================== HTML টেমপ্লেট ====================
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MetaSearch Pro - ১০টি সার্চ ইঞ্জিন</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.95);
+            border-radius: 28px;
+            padding: 30px;
+            box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+        }
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; flex-wrap: wrap; gap: 10px; }
+        .logo { display: flex; align-items: center; gap: 12px; }
+        .logo h1 { font-size: 28px; color: #1a1a2e; }
+        .logo span { background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .status { font-size: 13px; color: #718096; padding: 6px 16px; background: #f7fafc; border-radius: 20px; border: 1px solid #e2e8f0; }
+        .search-card { background: white; border-radius: 18px; padding: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); margin-bottom: 20px; }
+        .api-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+        .api-row input { flex: 1; min-width: 150px; padding: 12px 16px; border: 2px solid #e2e8f0; border-radius: 12px; font-size: 14px; transition: all 0.3s; }
+        .api-row input:focus { border-color: #667eea; outline: none; box-shadow: 0 0 0 3px rgba(102,126,234,0.2); }
+        .search-row { display: flex; gap: 12px; flex-wrap: wrap; }
+        .search-row input { flex: 1; min-width: 200px; padding: 16px 20px; border: 2px solid #e2e8f0; border-radius: 14px; font-size: 16px; transition: all 0.3s; }
+        .search-row input:focus { border-color: #667eea; outline: none; box-shadow: 0 0 0 4px rgba(102,126,234,0.15); }
+        .btn { padding: 16px 32px; border: none; border-radius: 14px; font-weight: 600; font-size: 16px; cursor: pointer; transition: all 0.3s; display: flex; align-items: center; gap: 8px; }
+        .btn-primary { background: linear-gradient(135deg, #667eea, #764ba2); color: white; box-shadow: 0 4px 16px rgba(102,126,234,0.3); }
+        .btn-primary:hover { transform: translateY(-3px); box-shadow: 0 8px 28px rgba(102,126,234,0.4); }
+        .btn-secondary { background: #edf2f7; color: #2d3748; }
+        .btn-secondary:hover { background: #e2e8f0; transform: translateY(-2px); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none !important; }
+        .info-bar { display: flex; justify-content: space-between; margin-top: 16px; padding-top: 16px; border-top: 1px solid #e2e8f0; color: #718096; font-size: 14px; flex-wrap: wrap; gap: 10px; }
+        .remaining { color: #48bb78; font-weight: 600; }
+        .engine-badge { display: flex; gap: 6px; flex-wrap: wrap; }
+        .engine-badge span { padding: 3px 10px; background: #f7fafc; border-radius: 20px; font-size: 11px; border: 1px solid #e2e8f0; }
+        #results { min-height: 200px; margin-top: 10px; }
+        .result-item { background: white; border-radius: 14px; padding: 20px; margin-bottom: 14px; border-left: 5px solid #667eea; box-shadow: 0 2px 8px rgba(0,0,0,0.04); transition: all 0.3s; }
+        .result-item:hover { transform: translateX(6px); box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+        .result-title { font-size: 18px; font-weight: 600; color: #1a1a2e; text-decoration: none; display: block; margin-bottom: 4px; }
+        .result-title:hover { color: #667eea; }
+        .result-url { font-size: 13px; color: #48bb78; margin-bottom: 6px; word-break: break-all; }
+        .result-snippet { color: #4a5568; line-height: 1.7; font-size: 15px; }
+        .result-source { display: inline-block; padding: 4px 14px; background: #f7fafc; border-radius: 20px; font-size: 12px; font-weight: 600; color: #4a5568; margin-top: 8px; border: 1px solid #e2e8f0; }
+        .empty-state { text-align: center; padding: 60px 20px; color: #a0aec0; }
+        .empty-state h3 { color: #2d3748; margin: 12px 0; }
+        .empty-icon { font-size: 64px; }
+        .loading { text-align: center; padding: 50px; }
+        .spinner { width: 50px; height: 50px; border: 5px solid #e2e8f0; border-top-color: #667eea; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
+        .loading-engines { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 15px; }
+        .loading-engines span { padding: 6px 14px; background: #f7fafc; border-radius: 20px; font-size: 12px; animation: pulse 1.5s infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+        .result-item { animation: fadeIn 0.4s ease both; }
+        footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; color: #718096; font-size: 13px; flex-wrap: wrap; gap: 12px; }
+        .notification { position: fixed; top: 20px; right: 20px; padding: 16px 24px; background: white; border-left: 5px solid #667eea; border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); z-index: 999; max-width: 400px; font-weight: 500; animation: slideIn 0.3s ease; color: #1a1a2e; }
+        @keyframes slideIn { from { transform: translateX(120px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @media (max-width: 640px) { .container { padding: 16px; } .search-row { flex-direction: column; } .btn { justify-content: center; } .api-row { flex-direction: column; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo"><h1>🔍 Meta<span>Search Pro</span></h1></div>
+            <div class="status" id="apiStatus">⚪ সংযুক্ত নয়</div>
+        </header>
+        <div class="search-card">
+            <div class="api-row">
+                <input type="text" id="apiKeyInput" placeholder="🔑 আপনার API Key দিন">
+                <button class="btn btn-secondary" onclick="saveKey()">💾 সংরক্ষণ</button>
+                <button class="btn btn-secondary" onclick="showKeys()">🔑 কী দেখুন</button>
+            </div>
+            <div class="search-row">
+                <input type="text" id="searchInput" placeholder="যা খুঁজতে চান লিখুন... (১০টি সার্চ ইঞ্জিন)" onkeypress="if(event.key==='Enter') search()">
+                <button class="btn btn-primary" id="searchBtn" onclick="search()">🔎 অনুসন্ধান</button>
+            </div>
+            <div class="info-bar">
+                <span id="resultCount">০টি ফলাফল</span>
+                <span class="remaining" id="remainingQueries">⚡ অবশিষ্ট: --</span>
+                <div class="engine-badge">
+                    <span>🦆 DDG</span><span>🔵 Qwant</span><span>🦁 Brave</span><span>🟢 Start</span><span>🔴 Yandex</span>
+                    <span>🔵 Google</span><span>🔴 Bing</span><span>🌳 Ecosia</span><span>🟣 MetaGer</span><span>📚 Wiki</span>
+                </div>
+            </div>
+        </div>
+        <div id="results">
+            <div class="empty-state"><div class="empty-icon">🌐</div><h3>অনুসন্ধান শুরু করুন</h3><p>১০টি সার্চ ইঞ্জিন থেকে ফলাফল পেতে উপরে লিখুন</p></div>
+        </div>
+        <footer>
+            <span>© 2024 MetaSearch Pro</span>
+            <span>⚡ ১০টি ইঞ্জিন | 🔒 API Key সুরক্ষিত | 📊 রেট লিমিট: ৫০/দিন</span>
+        </footer>
+    </div>
+    <script>
+        const API_BASE = window.location.origin;
+        let currentKey = localStorage.getItem('metasearch_key') || '';
+        if(currentKey) { document.getElementById('apiKeyInput').value = currentKey; updateStatus(true); }
+        
+        function saveKey() { 
+            const k=document.getElementById('apiKeyInput').value.trim(); 
+            if(k){currentKey=k;localStorage.setItem('metasearch_key',k);updateStatus(true);showNotif('✅ API Key সংরক্ষিত হয়েছে','#48bb78');}
+            else{showNotif('⚠️ দয়া করে একটি API Key দিন','#fc8181');} 
+        }
+        
+        function showKeys() {
+            showNotif('🔑 free_user_123, premium_user_456, test_key_789', '#667eea');
+        }
+        
+        function updateStatus(on){ 
+            document.getElementById('apiStatus').innerHTML=on?'🟢 সংযুক্ত':'🔴 সংযুক্ত নয়'; 
+            document.getElementById('apiStatus').style.color=on?'#48bb78':'#fc8181'; 
+        }
+        
+        function showNotif(msg,col){ 
+            const old=document.querySelector('.notification'); if(old)old.remove(); 
+            const d=document.createElement('div');d.className='notification';d.style.borderLeftColor=col||'#667eea';
+            d.textContent=msg;document.body.appendChild(d);setTimeout(()=>d.remove(),3500); 
+        }
+        
+        async function search() {
+            const q=document.getElementById('searchInput').value.trim();
+            if(!q){showNotif('⚠️ দয়া করে কিছু লিখুন','#fc8181');return;}
+            if(!currentKey){showNotif('⚠️ দয়া করে API Key দিন','#fc8181');document.getElementById('apiKeyInput').focus();return;}
+            
+            const btn=document.getElementById('searchBtn');
+            btn.disabled=true; btn.innerHTML='⏳ খুঁজছি...';
+            const resDiv=document.getElementById('results');
+            resDiv.innerHTML=`
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p style="font-weight:600;color:#2d3748;">🔍 "${q}" খুঁজছি...</p>
+                    <div class="loading-engines">
+                        <span>🦆 DDG</span><span>🔵 Qwant</span><span>🦁 Brave</span><span>🟢 Startpage</span>
+                        <span>🔴 Yandex</span><span>🔵 Google</span><span>🔴 Bing</span>
+                        <span>🌳 Ecosia</span><span>🟣 MetaGer</span><span>📚 Wikipedia</span>
+                    </div>
+                </div>
+            `;
+            
+            try{
+                const r=await fetch(API_BASE+'/api/search?q='+encodeURIComponent(q),{headers:{'X-API-Key':currentKey}});
+                const d=await r.json();
+                if(r.status===401){showNotif('🔑 API Key সঠিক নয়','#fc8181');updateStatus(false);showEmpty();return;}
+                if(r.status===429){showNotif('⛔ রেট লিমিট শেষ! আগামীকাল চেষ্টা করুন','#fc8181');showEmpty();return;}
+                if(d.results && d.results.length>0){
+                    let html='';
+                    d.results.forEach((item,i)=>{
+                        const colors = {
+                            'DuckDuckGo':'#4a8c3f','Qwant':'#4a8ccf','Brave':'#ff5722',
+                            'Startpage':'#4caf50','Yandex':'#ff3333','Google':'#4285f4',
+                            'Bing':'#00a4ef','Ecosia':'#4caf50','MetaGer':'#9c27b0','Wikipedia':'#000000'
+                        };
+                        const sourceClean = item.source.replace(/[^a-zA-Z]/g,'');
+                        const color = colors[sourceClean] || '#667eea';
+                        html+='<div class="result-item" style="animation-delay:'+(i*0.02)+'s;border-left-color:'+color+'">'+
+                            '<a href="'+item.url+'" target="_blank" class="result-title">'+escapeHTML(item.title)+'</a>'+
+                            '<div class="result-url">'+escapeHTML(item.url)+'</div>'+
+                            '<div class="result-snippet">'+escapeHTML(item.snippet)+'</div>'+
+                            '<span class="result-source">'+escapeHTML(item.source)+'</span></div>';
+                    });
+                    resDiv.innerHTML=html;
+                    document.getElementById('resultCount').textContent=d.results.length+'টি ফলাফল (১০টি ইঞ্জিন থেকে)';
+                    if(d.remaining_queries!==undefined) document.getElementById('remainingQueries').textContent='⚡ অবশিষ্ট: '+d.remaining_queries;
+                    updateStatus(true);
+                }else{
+                    resDiv.innerHTML='<div class="empty-state"><div class="empty-icon">😕</div><h3>কোন ফলাফল পাওয়া যায়নি</h3><p>"'+q+'" এর জন্য</p></div>';
+                    document.getElementById('resultCount').textContent='০টি ফলাফল';
+                }
+            }catch(e){showNotif('❌ সার্ভার কানেক্ট হয়নি','#fc8181');showEmpty();}
+            btn.disabled=false; btn.innerHTML='🔎 অনুসন্ধান';
+        }
+        
+        function showEmpty(){ 
+            document.getElementById('results').innerHTML='<div class="empty-state"><div class="empty-icon">🌐</div><h3>অনুসন্ধান শুরু করুন</h3><p>১০টি সার্চ ইঞ্জিন থেকে ফলাফল পেতে উপরে লিখুন</p></div>'; 
+            document.getElementById('resultCount').textContent='০টি ফলাফল'; 
+        }
+        
+        function escapeHTML(t){ if(!t)return ''; const d=document.createElement('div'); d.textContent=t; return d.innerHTML; }
+    </script>
+</body>
+</html>
+'''
+
+# ==================== Flask রাউট ====================
+@app.route('/')
+def home():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/api/search', methods=['GET'])
+@require_api_key
+def search_api(user_info=None, api_key=None):
+    query = request.args.get('q')
+    if not query:
+        return jsonify({'error': 'Query parameter "q" is required', 'status': 400}), 400
+    
+    results = []
+    engine_count = len(SEARCH_ENGINES)
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=engine_count) as executor:
+        futures = [executor.submit(engine, query) for engine in SEARCH_ENGINES]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                results.extend(future.result(timeout=TIMEOUT))
+            except Exception as e:
+                print(f"Search error: {e}")
+    
+    # ডুপ্লিকেট রিমুভ (URL ভিত্তিক)
+    seen = set()
+    unique = []
+    for r in results:
+        url = r.get('url', '')
+        if url and url not in seen and len(url) < 300:
+            seen.add(url)
+            unique.append(r)
+    
+    # সোর্স অনুযায়ী সর্ট
+    source_order = {
+        'DuckDuckGo': 0, 'Qwant': 1, 'Brave': 2, 'Startpage': 3, 
+        'Yandex': 4, 'Google': 5, 'Bing': 6, 'Ecosia': 7, 
+        'MetaGer': 8, 'Wikipedia': 9
+    }
+    
+    def get_source_order(item):
+        source = item.get('source', '')
+        for key in source_order:
+            if key in source:
+                return source_order[key]
+        return 999
+    
+    unique.sort(key=get_source_order)
+    
+    response = jsonify({
+        'query': query,
+        'results': unique[:50],
+        'total': len(unique),
+        'user': user_info['name'],
+        'api_key': api_key,
+        'remaining_queries': API_KEYS[api_key]['rate_limit'] - REQUEST_COUNTS[api_key],
+        'engines_used': engine_count
+    })
+    return response
+
+@app.route('/api/generate-key', methods=['POST'])
+def generate_key():
+    admin_secret = request.headers.get('X-Admin-Secret')
+    if admin_secret != 'admin123':
+        return jsonify({'error': 'Unauthorized', 'status': 401}), 401
+    name = request.json.get('name', 'User')
+    rate_limit = request.json.get('rate_limit', 50)
+    key = secrets.token_hex(16)
+    API_KEYS[key] = {'rate_limit': rate_limit, 'name': name, 'created_at': datetime.now().isoformat()}
+    REQUEST_COUNTS[key] = 0
+    return jsonify({'api_key': key, 'name': name, 'rate_limit': rate_limit})
+
+@app.route('/api/keys', methods=['GET'])
+def list_keys():
+    admin_secret = request.headers.get('X-Admin-Secret')
+    if admin_secret != 'admin123':
+        return jsonify({'error': 'Unauthorized', 'status': 401}), 401
+    return jsonify({'keys': list(API_KEYS.keys())})
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found', 'status': 404}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error', 'status': 500}), 500
+
+# ==================== রান ====================
+if __name__ == '__main__':
+    print("\n" + "="*60)
+    print("🚀 MetaSearch Pro চালু হচ্ছে (১০টি সার্চ ইঞ্জিন সহ)...")
+    print("="*60)
+    print("\n🔑 ডিফল্ট API Keys:")
+    for key in API_KEYS:
+        print(f"   📌 {key} (লিমিট: {API_KEYS[key]['rate_limit']}/দিন)")
+    print("\n🔍 সার্চ ইঞ্জিনসমূহ:")
+    for i, engine in enumerate(SEARCH_ENGINES, 1):
+        name = engine.__name__.replace('search_', '').title()
+        print(f"   {i}. {name}")
+    print("\n🌐 http://localhost:5000")
+    print("="*60 + "\n")
+    app.run(debug=True, host='0.0.0.0', port=5000)
